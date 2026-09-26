@@ -1,7 +1,9 @@
 import type { Db } from "../../database/db";
 import type { JwtPayload } from "../../types/auth";
-import type { ClassListDto } from "../../types/class";
+import type { ClassListDto, ClassRosterDto } from "../../types/class";
 import { classRepository } from "./repository";
+
+export type ClassError = "not_found" | "forbidden_class";
 
 class ClassService {
   /**
@@ -17,6 +19,54 @@ class ClassService {
   async listForUser(db: Db, user: JwtPayload): Promise<ClassListDto> {
     const classes = await this.allowedClasses(db, user);
     return { classes, default: defaultClassFor(user, classes) };
+  }
+
+  /**
+   * Roster satu kelas — daftar siswa untuk dropdown Petugas pada tabel jadwal.
+   *
+   * Kelas ini **menyaring sendiri** lewat `allowedClasses`, tidak mengandalkan
+   * middleware. `canWriteClass` di jalur jadwal belum menolong di sini: orang
+   * tua juga boleh membaca kelas anaknya, sedangkan roster memuat nama orang
+   * tua siswa lain dan akun mereka — data yang tidak ada urusannya bagi
+   * sesama orang tua. Jadi hanya pengelola jadwal (admin & korlas) yang
+   * dilayani, dan korlas hanya untuk kelasnya sendiri.
+   *
+   * `not_found` dibedakan dari `forbidden_class` supaya pesan errornya jujur:
+   * kolom kelas yang salah ketik tidak boleh terbaca sebagai "tidak berhak".
+   */
+  async roster(
+    db: Db,
+    user: JwtPayload,
+    requested: string,
+  ): Promise<ClassRosterDto | ClassError> {
+    const allowed = await this.allowedClasses(db, user);
+    const className = requested.trim();
+
+    if (!className) return "not_found";
+
+    // Admin boleh melihat kelas apa pun yang dikenal sistem, termasuk kelas
+    // yang belum punya siswa — karena itu keberadaannya dicek lebih dulu,
+    // bukan sekadar keanggotaan di daftar kelas yang berpenghuni.
+    if (user.role === "admin") {
+      const known = await classRepository.listAll(db);
+      if (!known.includes(className)) return "not_found";
+    } else if (!allowed.includes(className)) {
+      return "forbidden_class";
+    }
+
+    const rows = await classRepository.listStudentsForClass(db, className);
+
+    return {
+      className,
+      students: rows.map((row) => ({
+        studentId: row.studentId,
+        studentName: row.studentName,
+        className: row.className,
+        parentId: row.parentId,
+        parentName: row.parentName,
+        parentUserId: row.parentUserId,
+      })),
+    };
   }
 
   /** Inti pembatasan kelas — dipakai juga oleh resolver cakupan jadwal. */

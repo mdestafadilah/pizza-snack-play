@@ -22,6 +22,7 @@ import { errorMessage, api } from "@/lib/api";
 import { useActiveClass } from "@/lib/active-class";
 import { useAuth } from "@/lib/auth-context";
 import { useMonthNavigator } from "@/hooks/useMonthNavigator";
+import { useClassRoster } from "@/hooks/useClassRoster";
 import { monthRange, todayInWib } from "@/lib/date";
 import type { ScheduleDayDto } from "@/types/schedule";
 
@@ -100,6 +101,12 @@ function ScheduleAdminContent() {
     queryFn: () => api.menus.list({ active: true }),
   });
 
+  /**
+   * Siswa kelas yang sedang dilihat — bahan dropdown Petugas & Orang tua.
+   * Dimuat sekali per kelas lalu dipakai seluruh baris, bukan per baris.
+   */
+  const rosterQuery = useClassRoster(className);
+
   const holidaysQuery = useQuery({
     queryKey: ["holidays"],
     queryFn: () => api.holidays.list(),
@@ -133,8 +140,7 @@ function ScheduleAdminContent() {
         className: className!,
         menuId: vars.patch.menuId ?? null,
         isHoliday: vars.patch.isHoliday ?? false,
-        petugasName: vars.patch.petugasName ?? null,
-        petugasParentName: vars.patch.petugasParentName ?? null,
+        petugasStudentId: vars.patch.petugasStudentId ?? null,
         notes: vars.patch.notes ?? null,
       });
     },
@@ -262,6 +268,7 @@ function ScheduleAdminContent() {
     unlockMutation.isPending;
 
   const menus = menusQuery.data ?? [];
+  const roster = rosterQuery;
   const weeks = monthQuery.data?.weeks ?? [];
   const status = statusQuery.data;
   const hasDrafts = (status?.totals.draftCount ?? 0) > 0;
@@ -354,6 +361,9 @@ function ScheduleAdminContent() {
                   key={day.date}
                   day={day}
                   menus={menus}
+                  roster={roster.students}
+                  rosterLoading={roster.isLoading}
+                  rosterEmpty={roster.isEmpty}
                   busy={busy}
                   canUnlock={isAdmin}
                   className={className}

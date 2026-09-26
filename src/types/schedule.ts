@@ -39,6 +39,17 @@ export interface ScheduleDayDto {
   menu: MenuDto | null;
   /** Nama siswa yang bertugas piket (ambil snack) pada hari ini. */
   petugasName: string | null;
+  /**
+   * Siswa & orang tua yang jadi petugas — dipakai dropdown tabel jadwal untuk
+   * menampilkan pilihan yang sedang aktif.
+   *
+   * Bernilai `null` untuk jadwal lama yang petugasnya masih berupa teks bebas
+   * (diisi sebelum kolom id ada), atau bila siswanya sudah dihapus. Nama di
+   * `petugasName` sengaja tetap dikirim dalam kasus itu supaya tampilan tidak
+   * berubah — hanya pilihan dropdown-nya yang tampak kosong.
+   */
+  petugasStudentId: number | null;
+  petugasParentId: number | null;
   /** Nama orang tua/wali petugas — bila diketahui. */
   petugasParentName: string | null;
   /** Status jadwal — hanya relevan untuk admin/korlas. */
@@ -148,7 +159,15 @@ export interface ScheduleInput {
   isHoliday?: boolean;
   /** Nama siswa yang bertugas piket mengambil snack. */
   petugasName?: string | null;
-  /** Nama orang tua/wali petugas. */
+  /**
+   * Siswa yang ditunjuk piket. Server **mengabaikan** ini dan menurunkannya
+   * sendiri dari `petugasStudentId` bila dikirim — lihat `resolvePetugas` di
+   * service jadwal. Dikirim oleh klien hanya sebagai sinyal maksud.
+   */
+  petugasParentId?: number | null;
+  /** `students.id` siswa yang ditunjuk piket; `null` untuk membatalkan. */
+  petugasStudentId?: number | null;
+  /** Nama orang tua/wali petugas — ikut diturunkan server. */
   petugasParentName?: string | null;
   notes?: string | null;
 }

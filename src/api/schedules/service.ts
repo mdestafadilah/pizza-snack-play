@@ -26,6 +26,7 @@ import type {
   WeekScheduleDto,
 } from "../../types/schedule";
 import { catalogRepository } from "../catalog/repository";
+import { classRepository } from "../classes/repository";
 import { claimService } from "../claims/service";
 import {
   addDays,
@@ -38,13 +39,13 @@ import {
   startOfWeek,
   todayInWib,
 } from "../utils/date";
-import { classRepository } from "../classes/repository";
 import { scheduleRepository } from "./repository";
 
 export type ScheduleError =
   | "not_found"
   | "duplicate_date"
   | "menu_not_found"
+  | "petugas_not_found"
   | "same_week"
   | "forbidden_class"
   | "not_editable"
@@ -155,6 +156,8 @@ class ScheduleService {
         ? null
         : ((schedule?.menuId ? ctx.menusById.get(schedule.menuId) : null) ?? null),
       petugasName: schedule?.petugasName ?? null,
+      petugasStudentId: schedule?.petugasStudentId ?? null,
+      petugasParentId: schedule?.petugasParentId ?? null,
       petugasParentName: schedule?.petugasParentName ?? null,
       status: (schedule?.status as ScheduleStatus | undefined) ?? null,
       claim: schedule ? (ctx.claimsByScheduleId.get(schedule.id) ?? null) : null,
@@ -497,6 +500,102 @@ class ScheduleService {
   // ── Penulisan (admin & korlas) ──────────────────────────────
 
   /**
+   * Terjemahkan `petugasStudentId` menjadi nama siswa & nama orang tuanya,
+   * untuk satu kelas tertentu.
+   *
+   * Ini **satu-satunya** tempat petugas ditetapkan, dan sengaja tidak
+   * menerima nama dari klien: `petugasName`/`petugasParentName` yang dikirim
+   * klien akan ditimpa, sehingga baris jadwal tidak pernah memuat pasangan
+   * siswa–orang tua yang tidak ada di database, maupun petugas dari kelas
+   * lain. Siswa diambil dari roster kelas baris itu, jadi penunjukan lintas
+   * kelas tidak perlu diperiksa terpisah — kelasnya sudah jadi filter.
+   *
+   * Tiga hasil yang mungkin:
+   *
+   * - `{ ok: true, value: null }`  → membatalkan petugas (id dikosongkan).
+   * - `{ ok: true, value: {...} }` → petugas sah; nama diturunkan dari data.
+   * - `{ ok: false }`              → siswa tidak ada di kelas ini.
+   *
+   * `fallback` menjaga perilaku lama tetap hidup: jadwal yang petugasnya
+   * masih berupa teks bebas (diisi sebelum kolom id ada, atau lewat impor)
+   * tidak kehilangan isinya hanya karena sengaja tidak menyebut id. Yang
+   * dihapus, justru pasangan yang bertentangan.
+   */
+  private async resolvePetugas(
+    db: Db,
+    className: string,
+    input: Partial<Pick<ScheduleInput, "petugasStudentId" | "petugasName" | "petugasParentName">>,
+    fallback: Schedule | undefined,
+  ): Promise<
+    | { ok: true; value: {
+        petugasName: string | null;
+        petugasStudentId: number | null;
+        petugasParentId: number | null;
+        petugasParentName: string | null;
+      } }
+    | { ok: false; error: ScheduleError }
+  > {
+    const requested = input.petugasStudentId;
+
+    // Tidak menyebut studentId sama sekali → pertahankan yang tersimpan.
+    if (requested === undefined) {
+      if (fallback) {
+        return {
+          ok: true,
+          value: {
+            petugasName: fallback.petugasName,
+            petugasStudentId: fallback.petugasStudentId,
+            petugasParentId: fallback.petugasParentId,
+            petugasParentName: fallback.petugasParentName,
+          },
+        };
+      }
+
+      // Baris baru tanpa id: satu-satunya jalan agar data lama & impor tetap
+      // bisa menyimpan nama sebagai teks bebas.
+      return {
+        ok: true,
+        value: {
+          petugasName: input.petugasName?.trim() || null,
+          petugasStudentId: null,
+          petugasParentId: null,
+          petugasParentName: input.petugasParentName?.trim() || null,
+        },
+      };
+    }
+
+    // Menyebut `null` secara eksplisit → kosongkan petugas.
+    if (requested === null) {
+      return {
+        ok: true,
+        value: {
+          petugasName: null,
+          petugasStudentId: null,
+          petugasParentId: null,
+          petugasParentName: null,
+        },
+      };
+    }
+
+    const student = (await classRepository.listStudentsForClass(db, className)).find(
+      (row) => row.studentId === requested,
+    );
+    if (!student) return { ok: false, error: "petugas_not_found" };
+
+    return {
+      ok: true,
+      value: {
+        petugasName: student.studentName,
+        petugasStudentId: student.studentId,
+        // Orang tua tanpa profil tetap boleh jadi petugas; hanya
+        // keterkaitan ke akunnya yang kosong.
+        petugasParentId: student.parentId || null,
+        petugasParentName: student.parentName || null,
+      },
+    };
+  }
+
+  /**
    * Buat satu baris jadwal untuk satu kelas.
    * Keunikan (tanggal, kelas) dijaga di sini agar pesannya ramah.
    */
@@ -517,6 +616,9 @@ class ScheduleService {
       if (!menu) return "menu_not_found";
     }
 
+    const petugas = await this.resolvePetugas(db, className, input, undefined);
+    if (!petugas.ok) return petugas.error;
+
     const week = await scheduleRepository.ensureWeek(db, input.scheduleDate);
 
     const created = await scheduleRepository.insertSchedule(db, {
@@ -526,8 +628,7 @@ class ScheduleService {
       className,
       menuId: input.isHoliday ? null : (input.menuId ?? null),
       isHoliday: input.isHoliday ? 1 : 0,
-      petugasName: input.petugasName ?? null,
-      petugasParentName: input.petugasParentName ?? null,
+      ...petugas.value,
       notes: input.notes ?? null,
     });
 
@@ -552,13 +653,22 @@ class ScheduleService {
       if (!menu) return "menu_not_found";
     }
 
+    // Petugas selalu diturunkan dari roster kelas **baris ini**, bukan dari
+    // kelas yang dipilih di layar — keduanya bisa berbeda saat admin bekerja.
+    const petugas = await this.resolvePetugas(
+      db,
+      current.className,
+      input,
+      current,
+    );
+    if (!petugas.ok) return petugas.error;
+
     const isHoliday = input.isHoliday;
 
     await scheduleRepository.updateSchedule(db, id, {
       ...(input.menuId !== undefined ? { menuId: input.menuId } : {}),
       ...(isHoliday !== undefined ? { isHoliday: isHoliday ? 1 : 0 } : {}),
-      ...(input.petugasName !== undefined ? { petugasName: input.petugasName } : {}),
-      ...(input.petugasParentName !== undefined ? { petugasParentName: input.petugasParentName } : {}),
+      ...petugas.value,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       // Hari libur tidak menyimpan menu.
       ...(isHoliday ? { menuId: null } : {}),
@@ -643,6 +753,8 @@ class ScheduleService {
           menuId: source.menuId,
           isHoliday: source.isHoliday,
           petugasName: source.petugasName,
+          petugasStudentId: source.petugasStudentId,
+          petugasParentId: source.petugasParentId,
           petugasParentName: source.petugasParentName,
           notes: source.notes,
         });
@@ -659,6 +771,8 @@ class ScheduleService {
         menuId: source.menuId,
         isHoliday: source.isHoliday,
         petugasName: source.petugasName,
+        petugasStudentId: source.petugasStudentId,
+        petugasParentId: source.petugasParentId,
         petugasParentName: source.petugasParentName,
         notes: source.notes,
       });

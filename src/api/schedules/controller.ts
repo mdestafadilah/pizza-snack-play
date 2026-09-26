@@ -39,6 +39,11 @@ function mapError(c: ScheduleContext, error: ScheduleError) {
       return responseConflict(c, "Sudah ada jadwal pada tanggal tersebut");
     case "menu_not_found":
       return responseBadRequest(c, "Menu tidak ditemukan");
+    case "petugas_not_found":
+      return responseBadRequest(
+        c,
+        "Siswa yang dipilih sebagai petugas tidak ada di kelas ini",
+      );
     case "same_week":
       return responseBadRequest(c, "Minggu sumber dan tujuan sama");
     case "forbidden_class":
@@ -57,6 +62,25 @@ function mapScopeError(c: ScheduleContext, error: ClassScopeError) {
 }
 
 const FORBIDDEN_CLASS = "Kelas ini bukan cakupan Anda";
+
+/**
+ * Baca id opsional dari body: angka bulat → nilainya, `null`/tidak ada →
+ * `null`, selain itu → `null` juga.
+ *
+ * Dipakai untuk `petugasStudentId`, yang punya tiga keadaan bermakna
+ * (`undefined` = jangan diubah, `null` = kosongkan, angka = siswa tertentu).
+ * Karena itu pemanggilnya harus tetap bisa membedakan `undefined` dari `null`
+ * — di sini `null` dipertahankan sebagai nilai, bukan dianggap "tidak ada".
+ */
+function integerOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  // Beberapa klien mengirim angka sebagai string (mis. dari atribut `<option>`).
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number.parseInt(value.trim(), 10);
+  }
+  return null;
+}
 
 /** Label kelas untuk pesan 409 — sebutkan kelasnya, bukan sekadar "ada draft". */
 function classLabel(classes: string[]): string {
@@ -364,6 +388,7 @@ class ScheduleController {
         scheduleDate: body.scheduleDate,
         menuId: body.menuId ?? null,
         isHoliday: body.isHoliday === true,
+        petugasStudentId: integerOrNull(body.petugasStudentId),
         petugasName: typeof body.petugasName === "string" ? body.petugasName : null,
         petugasParentName: typeof body.petugasParentName === "string" ? body.petugasParentName : null,
         notes: typeof body.notes === "string" ? body.notes : null,
@@ -400,8 +425,15 @@ class ScheduleController {
     const result = await scheduleService.updateSchedule(db, id, {
       ...(body.menuId !== undefined ? { menuId: body.menuId } : {}),
       ...(body.isHoliday !== undefined ? { isHoliday: body.isHoliday } : {}),
-      ...(body.petugasName !== undefined ? { petugasName: body.petugasName } : {}),
-      ...(body.petugasParentName !== undefined ? { petugasParentName: body.petugasParentName } : {}),
+      /**
+       * `petugasStudentId` diteruskan apa adanya — termasuk `null` (yang
+       * berarti "kosongkan petugas"). Nama siswa & orang tua tidak
+       * diteruskan dari klien; server yang menurunkannya, sehingga body yang
+       * mencoba menuliskan nama bebas tidak berpengaruh.
+       */
+      ...(body.petugasStudentId !== undefined
+        ? { petugasStudentId: integerOrNull(body.petugasStudentId) }
+        : {}),
       ...(body.notes !== undefined ? { notes: body.notes } : {}),
     });
 

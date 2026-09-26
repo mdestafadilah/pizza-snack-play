@@ -125,6 +125,8 @@ class ScheduleRepository {
       menuId: number | null;
       isHoliday: number;
       petugasName: string | null;
+      petugasStudentId: number | null;
+      petugasParentId: number | null;
       petugasParentName: string | null;
       notes: string | null;
     },
@@ -141,6 +143,8 @@ class ScheduleRepository {
       menuId: number | null;
       isHoliday: number;
       petugasName: string | null;
+      petugasStudentId: number | null;
+      petugasParentId: number | null;
       petugasParentName: string | null;
       notes: string | null;
     }>,

@@ -194,6 +194,27 @@ Saat ini jadwal piket snack disusun dalam format teks manual (lihat lampiran), d
 >   
 > atau diisi otomatis ketika seorang orang tua mengambil tanggal itu.
 >
+> **Perubahan v1.8 — petugas jadi relasi, bukan teks bebas.** Kolom teks `petugas_name` /
+>   
+> `petugas_parent_name` kini **diturunkan** dari dua kolom baru `petugas_student_id` dan
+>   
+> `petugas_parent_id` (migrasi `0007`), yang diikat satu foreign key komposit ke pasangan
+>   
+> `students(id, parent_id)`. Akibatnya:
+>
+> - Di halaman **Kelola Jadwal**, kolom *Petugas* berubah dari input teks menjadi **dropdown
+>   berisi siswa kelas itu** (sumber: `GET /api/classes/:class/roster`), dan kolom *Orang tua*
+>   menjadi **read-only** yang terisi otomatis dari siswa terpilih. Sebelumnya dua kolom itu
+>   bisa diisi bebas dan tidak pernah dijamin cocok satu sama lain.
+> - Nama di `petugas_name`/`petugas_parent_name` kini **selalu diturunkan server** dari
+>   `petugas_student_id`. Body request yang menyelipkan nama sendiri akan ditimpa, sehingga
+>   baris jadwal tidak mungkin memuat pasangan siswa–orang tua yang tidak ada di database.
+> - Petugas wajib siswa **dari kelas baris itu**. FK komposit `(class_name, petugas_student_id)
+>   → students(class_name, id)` menolaknya di tingkat database — sebelumnya `petugas_name`
+>   teks bebas membuat penunjukan lintas kelas tidak terdeteksi sama sekali.
+> - Kolomnya **nullable dan tanpa backfill**: jadwal lama (hasil impor `output_jadwal_piket.txt`)
+>   tetap menampilkan namanya seperti semula, hanya id-nya kosong sampai korlas memilih ulang.
+>
 > Rancangan asli dipertahankan di bawah sebagai catatan sejarah.
 
 - **Tetapkan siswa piket** — pilih tanggal → pilih kelas → masukkan nama siswa yang bertugas membawa/menyiapkan snack hari itu.

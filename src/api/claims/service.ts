@@ -147,8 +147,12 @@ class ClaimService {
 
     // Klaim menjadi sumber kebenaran petugas hari itu, sehingga seluruh
     // tampilan yang sudah merender petugas ikut terisi tanpa perubahan.
+    // Id-nya ikut disimpan supaya dropdown jadwal mengenali petugas ini
+    // sebagai siswa yang sah, bukan teks bebas dari data lama.
     await scheduleRepository.updateSchedule(db, input.scheduleId, {
       petugasName: student?.name ?? null,
+      petugasStudentId: student?.id ?? null,
+      petugasParentId: parent.parent.id,
       petugasParentName: parent.parent.parentName,
     });
 
@@ -200,6 +204,8 @@ class ClaimService {
     // jadi tanggalnya dikembalikan menjadi kosong dan bisa direbut lagi.
     await scheduleRepository.updateSchedule(db, row.claim.scheduleId, {
       petugasName: null,
+      petugasStudentId: null,
+      petugasParentId: null,
       petugasParentName: null,
     });
 
