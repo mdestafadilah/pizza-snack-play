@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  foreignKey,
   index,
   integer,
   primaryKey,
@@ -156,12 +157,29 @@ export const schedules = sqliteTable(
     /**
      * Nama siswa yang bertugas piket mengambil snack pada tanggal ini.
      * Menu bersifat sekolah-wide, sehingga inilah yang membedakan satu kelas
-     * dari kelas lain pada tanggal yang sama. Disimpan sebagai teks bebas
-     * (bukan relasi ke `students`) karena daftar petugas berasal dari dokumen
-     * manual dan tidak setiap petugas punya akun.
+     * dari kelas lain pada tanggal yang sama.
+     *
+     * Nama disimpan **denormalisasi** di samping `petugasStudentId`: kolom ini
+     * yang dibaca tampilan (kartu jadwal, ekspor XLSX, pesan "sudah diambil")
+     * tanpa perlu join, dan tetap berisi nama walau siswanya kemudian
+     * dihapus. Penulisan lewat API selalu menurunkannya dari siswa terpilih,
+     * jadi teksnya tidak pernah bertentangan dengan id-nya.
      */
     petugasName: text("petugas_name"),
-    /** Nama orang tua/wali petugas — opsional, diisi bila diketahui. */
+    /**
+     * Siswa & orang tua yang jadi petugas — `null` bila piket belum ditunjuk
+     * atau berasal dari data lama yang belum punya id.
+     *
+     * Keduanya diikat dalam **satu foreign key komposit** ke pasangan
+     * `students(id, parent_id)`. Itu bukan hiasan: dengan dua FK terpisah,
+     * baris `(petugas_student_id = 7, petugas_parent_id = 3)` yang menunjuk
+     * anak dan orang tua berbeda tetap lolos, dan aplikasi harus menjaga
+     * konsistensinya sendiri di setiap jalur tulis. Dengan FK komposit,
+     * database yang menolaknya.
+     */
+    petugasStudentId: integer("petugas_student_id"),
+    petugasParentId: integer("petugas_parent_id"),
+    /** Nama orang tua/wali petugas — diturunkan dari `petugasParentId`. */
     petugasParentName: text("petugas_parent_name"),
     notes: text("notes"),
     /** Status jadwal: 'draft' | 'locked' | 'published'. */
@@ -187,6 +205,33 @@ export const schedules = sqliteTable(
     index("idx_schedules_week").on(table.weekId),
     index("idx_schedules_menu").on(table.menuId),
     index("idx_schedules_class").on(table.className),
+    /**
+     * Untuk mengambil satu bulan satu kelas. Urutannya (kelas, tanggal)
+     * mengikuti pola baca yang nyata — bukan (tanggal, kelas) seperti
+     * `idx_schedules_date_class`, yang hanya melayani pencarian hari tunggal.
+     */
+    index("idx_schedules_class_date").on(table.className, table.scheduleDate),
+    /**
+     * Petugas wajib siswa dari kelas baris ini sendiri. `ON UPDATE CASCADE`
+     * membuat kelas anak yang dikoreksi ikut memperbaiki baris jadwalnya,
+     * alih-alih membiarkan baris itu menunjuk kelas yang sudah tidak benar.
+     */
+    foreignKey({
+      columns: [table.className, table.petugasStudentId],
+      foreignColumns: [students.className, students.id],
+      name: "fk_schedules_petugas_student",
+    })
+      .onUpdate("cascade")
+      .onDelete("set null"),
+    /**
+     * Pasangan siswa–orang tua harus benar-benar ada di `students`, sehingga
+     * tidak mungkin menyimpan anak milik orang tua lain.
+     */
+    foreignKey({
+      columns: [table.petugasStudentId, table.petugasParentId],
+      foreignColumns: [students.id, students.parentId],
+      name: "fk_schedules_petugas_parent",
+    }).onDelete("set null"),
     index("idx_schedules_status").on(table.status),
   ],
 );
@@ -273,6 +318,15 @@ export const parents = sqliteTable(
     updatedAt: text("updated_at").notNull().default(now),
   },
   (table) => [
+    /**
+     * Satu akun hanya boleh punya satu profil orang tua. Ini juga alasan
+     * teknis, bukan cuma kerapian: SQLite mensyaratkan kolom tujuan sebuah
+     * foreign key komposit punya indeks unik, dan `schedules` menunjuk
+     * `students(id, parent_id)` — yang memerlukan `parents(id)` unik
+     * (sudah dari primary key) **dan** `users(id)` unik (dari primary key).
+     * Indeks di bawah menjaga sisi "satu user, satu profil orang tua".
+     */
+    uniqueIndex("idx_parents_user").on(table.userId),
     index("idx_parents_user_id").on(table.userId),
     index("idx_parents_active").on(table.isActive),
   ],
@@ -297,6 +351,23 @@ export const students = sqliteTable(
   (table) => [
     index("idx_students_parent_id").on(table.parentId),
     index("idx_students_class").on(table.className),
+    /**
+     * Syarat indeks untuk FK komposit `schedules(petugas_student_id,
+     * petugas_parent_id) → students(id, parent_id)`.
+     */
+    uniqueIndex("idx_students_id_parent").on(table.id, table.parentId),
+    /**
+     * Syarat indeks untuk FK komposit `schedules(class_name,
+     * petugas_student_id) → students(class_name, id)`. SQLite mewajibkan
+     * kolom tujuan sebuah FK komposit punya indeks **unik** pada pasangan
+     * kolomnya persis — indeks biasa (atau unik pada pasangan lain seperti
+     * `(class_name, name)`) tidak diterima, dan pelanggarannya baru muncul
+     * sebagai "foreign key mismatch" saat `PRAGMA foreign_key_check`
+     * dijalankan, bukan saat tabelnya dibuat.
+     */
+    uniqueIndex("idx_students_class_id").on(table.className, table.id),
+    /** Roster per kelas: saring kelas, urutkan nama. */
+    index("idx_students_class_name").on(table.className, table.name),
   ],
 );
 

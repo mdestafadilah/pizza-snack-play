@@ -5,21 +5,28 @@ import { Badge, Button, ConfirmDialog, Input, Select } from "@/components/ui";
 import { formatCompactDate } from "@/lib/date";
 import { listItem } from "@/lib/motion";
 import type { MenuDto } from "@/types/catalog";
+import type { StudentRosterDto } from "@/types/class";
 import type { ScheduleDayDto } from "@/types/schedule";
+import { DayRowPetugas } from "./DayRowPetugas";
 import { NO_MENU, STATUS_META, isDayLocked } from "./shared";
 
 /** Perubahan yang bisa dikirim ke `POST/PUT /schedules`. */
 export interface DayPatch {
   menuId?: number | null;
   isHoliday?: boolean;
-  petugasName?: string | null;
-  petugasParentName?: string | null;
+  petugasStudentId?: number | null;
   notes?: string | null;
 }
 
 interface DayRowProps {
   day: ScheduleDayDto;
   menus: MenuDto[];
+  /** Siswa kelas ini beserta orang tuanya — bahan dropdown petugas. */
+  roster: StudentRosterDto[];
+  /** Roster belum selesai dimuat; dropdown petugas ditahan. */
+  rosterLoading: boolean;
+  /** Kelas ini ada tetapi belum punya siswa. */
+  rosterEmpty: boolean;
   /** Ada mutasi berjalan — tombol dinonaktifkan. */
   busy: boolean;
   /** `true` bila pengguna berhak membuka kunci (admin). */
@@ -33,12 +40,16 @@ interface DayRowProps {
 /**
  * Satu baris hari pada tabel jadwal bulanan.
  *
- * Menyimpan nilai input teks saat `onBlur` alih-alih tiap ketikan — jadwal
- * hanya ditulis bila nilainya benar-benar berubah.
+ * Menu & petugas & catatan disimpan saat nilainya berubah — bukan lewat
+ * tombol simpan tersendiri, karena satu baris adalah satu jadwal: `<Select>`
+ * memicu langsung, input teks saat `onBlur`.
  */
 export function DayRow({
   day,
   menus,
+  roster,
+  rosterLoading,
+  rosterEmpty,
   busy,
   canUnlock,
   className,
@@ -55,14 +66,11 @@ export function DayRow({
    */
   const [pending, setPending] = useState<"unlock" | "delete" | null>(null);
 
-  /** Kirim perubahan hanya bila nilai teksnya berubah. */
-  const saveText = (
-    key: "petugasName" | "petugasParentName" | "notes",
-    raw: string,
-  ) => {
+  /** Kirim catatan hanya bila isinya berubah. */
+  const saveNotes = (raw: string) => {
     const value = raw.trim();
-    if (value === (day[key] ?? "")) return;
-    onSave(day, { [key]: value || null });
+    if (value === (day.notes ?? "")) return;
+    onSave(day, { notes: value || null });
   };
 
   return (
@@ -119,22 +127,16 @@ export function DayRow({
       )}
 
       {!day.isHoliday && (
-        <>
-          <Input
-            className="w-36 shrink-0"
-            placeholder="Petugas…"
-            defaultValue={day.petugasName ?? ""}
-            disabled={busy}
-            onBlur={(event) => saveText("petugasName", event.target.value)}
-          />
-          <Input
-            className="w-36 shrink-0"
-            placeholder="Orang tua…"
-            defaultValue={day.petugasParentName ?? ""}
-            disabled={busy}
-            onBlur={(event) => saveText("petugasParentName", event.target.value)}
-          />
-        </>
+        <DayRowPetugas
+          className={className}
+          studentId={day.petugasStudentId}
+          petugasName={day.petugasName}
+          petugasParentName={day.petugasParentName}
+          roster={roster}
+          disabled={busy || rosterLoading}
+          rosterEmpty={rosterEmpty}
+          onSelectStudent={(studentId) => onSave(day, { petugasStudentId: studentId })}
+        />
       )}
 
       <Input
@@ -142,7 +144,7 @@ export function DayRow({
         placeholder="Catatan…"
         defaultValue={day.notes ?? ""}
         disabled={busy || dayLocked}
-        onBlur={(event) => saveText("notes", event.target.value)}
+        onBlur={(event) => saveNotes(event.target.value)}
       />
 
       <div className="flex shrink-0 gap-1">

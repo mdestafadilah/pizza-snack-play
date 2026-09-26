@@ -14,7 +14,7 @@ import type {
   MenuItemType,
 } from "@/types/catalog";
 import type { ClaimInput, ScheduleClaimDto } from "@/types/claim";
-import type { ClassListDto } from "@/types/class";
+import type { ClassListDto, ClassRosterDto } from "@/types/class";
 import type {
   CopyWeekInput,
   CopyWeekResultDto,
@@ -192,6 +192,16 @@ export const api = {
    */
   classes: {
     list: () => unwrap<ClassListDto>(http.get("classes")),
+
+    /**
+     * Siswa satu kelas beserta orang tuanya — bahan dropdown Petugas &
+     * Orang tua pada tabel jadwal. **Admin & korlas saja**; orang tua dijawab
+     * `403` karena isinya memuat data orang tua siswa lain.
+     */
+    roster: (className: string) =>
+      unwrap<ClassRosterDto>(
+        http.get(`classes/${encodeURIComponent(className)}/roster`),
+      ),
   },
 
   schedules: {

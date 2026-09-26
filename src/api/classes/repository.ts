@@ -1,6 +1,17 @@
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, asc, eq, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "../../database/db";
 import { parents, schedules, students, users } from "../../database/schema";
+
+/** Satu baris roster: siswa, kelasnya, dan akun orang tuanya. */
+export interface StudentRosterRow {
+  studentId: number;
+  studentName: string;
+  className: string | null;
+  parentId: number;
+  parentName: string;
+  /** `users.id` akun orang tua — `null` bila profilnya tidak punya akun aktif. */
+  parentUserId: number | null;
+}
 
 /** Rapikan daftar kelas: buang kosong/spasi, dedupe, urut abjad-numerik. */
 function normalize(values: (string | null)[]): string[] {
@@ -61,6 +72,50 @@ class ClassRepository {
       );
 
     return normalize(rows.map((row) => row.className));
+  }
+
+  /**
+   * Siswa aktif satu kelas beserta orang tuanya — bahan dropdown Petugas &
+   * Orang tua pada tabel jadwal.
+   *
+   * Orang tua di-join **kiri**: siswa tetap muncul walau profil orang tuanya
+   * nonaktif atau belum punya akun. Menyembunyikannya justru membuat korlas
+   * tidak bisa menunjuk piket hanya karena data akunnya belum lengkap; kolom
+   * `parentUserId` yang bernilai `null` sudah cukup untuk memberi tahu UI
+   * bahwa nama orang tuanya tidak dapat disimpan.
+   *
+   * Kelas dibandingkan persis (`=`) mengikuti konvensi `students.class_name`
+   * yang dipakai di seluruh aplikasi — bukan `like`, yang akan membuat
+   * kelas "1" ikut menarik kelas "10".
+   */
+  async listStudentsForClass(
+    db: Db,
+    className: string,
+  ): Promise<StudentRosterRow[]> {
+    const rows = await db
+      .select({
+        studentId: students.id,
+        studentName: students.name,
+        className: students.className,
+        parentId: parents.id,
+        parentName: parents.parentName,
+        parentUserId: parents.userId,
+      })
+      .from(students)
+      .leftJoin(parents, eq(parents.id, students.parentId))
+      .where(and(eq(students.className, className), eq(students.isActive, 1)))
+      .orderBy(asc(students.name));
+
+    return rows.map((row) => ({
+      studentId: row.studentId,
+      studentName: row.studentName,
+      className: row.className,
+      parentId: row.parentId ?? 0,
+      // Profil orang tua hilang (data lama/rusak) → jangan tampilkan `null`
+      // sebagai nama; UI memperlakukannya sebagai "tanpa orang tua".
+      parentName: row.parentName ?? "",
+      parentUserId: row.parentUserId ?? null,
+    }));
   }
 }
 

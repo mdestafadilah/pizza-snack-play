@@ -254,7 +254,7 @@ Middleware dipasang berurutan: `requireAuth` (401 bila tanpa token) lalu
 | `menu_items`      | Komponen individual dalam menu (makanan utama / buah)                                                               |
 | `menu_categories` | Relasi many-to-many menu ↔ kategori                                                                                 |
 | `weeks`           | Periode Sepekan (Senin–Jumat)                                                                                       |
-| `schedules`       | Tabel inti — **(tanggal × kelas)** → menu, `is_holiday`, petugas piket, dan `status` (`draft`/`locked`/`published`) |
+| `schedules`       | Tabel inti — **(tanggal × kelas)** → menu, `is_holiday`, petugas piket (`petugas_student_id`/`petugas_parent_id` + nama yang diturunkan), dan `status` (`draft`/`locked`/`published`) |
 | `schedule_claims` | Klaim satu tanggal oleh satu orang tua — **`UNIQUE(schedule_id)`** yang menjadi penjaga rebutan                     |
 | `holidays`        | Daftar hari libur nasional/sekolah — berlaku untuk **semua kelas**                                                  |
 | `users`           | Akun login (`admin` / `korlas` / `parent`), JWT auth, password hashing, `class_name` untuk korlas, **penghitung gagal masuk** (`failed_login_attempts`, `last_failed_login_at`, `locked_at`) |
@@ -284,9 +284,18 @@ Semua endpoint berada di bawah `basePath /api`. Kecuali `POST /api/auth/login`, 
 
 ### Kelas
 
-| Method | Endpoint   | Role | Keterangan                                                                               |
-| ------ | ---------- | ---- | ---------------------------------------------------------------------------------------- |
-| `GET`  | `/classes` | Auth | Kelas yang boleh diakses user — admin: semua, korlas: kelasnya, orang tua: kelas anaknya |
+| Method | Endpoint                  | Role           | Keterangan                                                                               |
+| ------ | ------------------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| `GET`  | `/classes`                | Auth           | Kelas yang boleh diakses user — admin: semua, korlas: kelasnya, orang tua: kelas anaknya |
+| `GET`  | `/classes/:class/roster`  | Admin, Korlas  | Siswa satu kelas + orang tuanya — bahan dropdown *Petugas* & *Orang tua* di tabel jadwal |
+
+> **`/roster` sengaja tidak dibuka untuk orang tua.** Isinya bukan sekadar nama siswa: ada
+> nama orang tua dan `id` akunnya. Orang tua lain tidak punya urusan dengan data itu, jadi
+> role-nya dibatasi di `route.ts` (403), sementara cakupan kelasnya ditegakkan di service —
+> admin boleh kelas mana pun, korlas mengikuti `allowedClasses` (boleh membaca kelas lain,
+> karena wewenang *mengubah* sudah dikunci terpisah oleh `canWriteClass`).
+> Kelas yang tidak dikenal dijawab **404**, bukan 403, supaya kolom kelas yang salah ketik
+> tidak terbaca sebagai masalah hak akses.
 
 ### Jadwal
 
@@ -683,6 +692,17 @@ jadwal maupun memakai Pilih Jadwal sampai `students`-nya diisi.
 - **Pencarian aman wildcard:** `%` dan `_` pada kata kunci pencarian di-escape (`utils/sql.ts`) sehingga diperlakukan sebagai karakter literal, bukan pola `LIKE`. Rentang pencarian dibatasi 400 hari (satu tahun ajaran) untuk membatasi beban query.
 - **Rebutan tanggal dijaga database, bukan aplikasi:** `schedule_claims` punya indeks unik pada `schedule_id`. Pengecekan "sudah diambil belum?" di service hanya untuk pesan yang ramah — dua orang tua yang menekan tombol pada detik yang sama sama-sama lolos pengecekan itu, lalu salah satunya ditolak SQLite dan ditangkap sebagai `already_claimed` (409) beserta nama pemenangnya. Diuji dengan 5 permintaan serentak: tepat satu berhasil.
 - **Klaim = sumber kebenaran petugas:** Mengambil tanggal ikut menulis `schedules.petugas_name` (nama anak) dan `petugas_parent_name` (nama orang tua); membatalkan mengosongkannya lagi. Dengan begitu seluruh tampilan yang sudah merender petugas ikut terisi tanpa perubahan tambahan, dan tidak ada dua sumber kebenaran soal siapa yang bertugas. Sebaliknya, tanggal yang petugasnya **sudah terisi tanpa klaim** berarti ditunjuk korlas dari daftar piket manual — tanggal itu tidak ikut diperebutkan (`already_assigned`).
+- **Petugas = relasi ke siswa, bukan teks bebas:** Kolom *Petugas* pada tabel jadwal kini dropdown
+  berisi siswa kelas itu, dan kolom *Orang tua* terisi otomatis (read-only) dari siswa terpilih.
+  Sumbernya `GET /classes/:class/roster`. Yang tersimpan adalah `petugas_student_id` +
+  `petugas_parent_id`; nama di `petugas_name`/`petugas_parent_name` **diturunkan server** dari id
+  itu, sehingga body request yang menyelipkan nama sendiri akan ditimpa (`resolvePetugas` di
+  `src/api/schedules/service.ts`). Dua FK komposit menjaganya di tingkat database: petugas wajib
+  siswa **dari kelas baris itu** (`class_name, petugas_student_id → students(class_name, id)`),
+  dan pasangan siswa–orang tua wajib benar-benar ada (`petugas_student_id, petugas_parent_id →
+  students(id, parent_id)`). Kolomnya **nullable tanpa backfill** — jadwal lama hasil impor tetap
+  menampilkan namanya, hanya id-nya kosong sampai korlas memilih ulang, dan `PUT` tanpa menyebut
+  `petugasStudentId` tidak mengubah apa pun. `petugasStudentId: null` berarti "kosongkan".
 - **Siklus hidup jadwal:** `draft` (bisa diedit) → `locked` (dibekukan **admin**) → `published` (tampil ke orang tua). Orang tua hanya melihat baris `published`; admin/korlas melihat semua. Kunci & buka kunci adalah wewenang admin, sehingga korlas tidak bisa membekukan maupun mencairkan jadwal. Baris `locked`/`published` menolak `PUT`/`DELETE` dengan 409, dan publikasi sebulan gagal selama masih ada `draft`. Konsekuensi praktisnya: korlas harus meninggalkan petugas kosong **sebelum** publikasi bila ingin tanggal itu direbutkan — setelah terbit, barisnya tidak bisa diedit lagi (admin pun harus membuka kuncinya dulu lewat `unlock`).
 - **`beforeinstallprompt` ditangkap sedini mungkin:** Event pemasangan PWA hanya menyala **sekali**, segera setelah Chrome memvalidasi manifest + service worker — jauh sebelum `PWAInstallPrompt` sempat dirender, karena komponen itu ada di dalam `AppShell` yang baru muncul setelah sesi diverifikasi ke `/auth/me`. Karena itu event-nya ditangkap skrip klasik inline di `<head>` `index.html` dan disimpan di `window.__pwaInstallPrompt`; `usePWA` membacanya saat mount. Tanpa ini tombol "Pasang" tidak pernah muncul. Skripnya harus klasik dan di `<head>`, sebab bundel aplikasi bertipe module dan otomatis ditunda.
 - **Duplikasi minggu:** `POST /schedules/copy` menyalin Senin–Jumat berdasarkan **offset hari**, bukan tanggal absolut. Hari di minggu tujuan yang sudah terisi dilewati kecuali `overwrite: true`. Hari libur ikut tersalin tanpa menu.
@@ -704,6 +724,7 @@ jadwal maupun memakai Pilih Jadwal sampai `students`-nya diisi.
 - **Penghitung gagal masuk dihitung di SQL, bukan dibaca dulu:** `registerFailedLogin` memakai `CASE WHEN last_failed_login_at < datetime('now','-900 seconds') THEN 1 ELSE failed_login_attempts + 1 END`. Kalau penghitungnya dibaca lalu ditulis dari aplikasi, dua percobaan yang berbarengan bisa sama-sama membaca nilai lama dan lolos. Kuncinya **tidak kedaluwarsa sendiri** — sengaja, karena yang bisa memastikan pemiliknya sah hanya admin sekolah.
 - **Mode tiru menyimpan sesi admin:** sebelum token orang tua dipakai, token admin dipindahkan ke `psp_impersonator` di `localStorage`, sehingga `stopImpersonating()` bisa mengembalikan sesi aslinya. Bilah kuning di atas layar menandakan sesi tiru sedang aktif — tanpa penanda itu mudah lupa sedang masuk sebagai orang lain.
 - **Kolom yang belum dimigrasi tidak melempar galat di SQLite:** nama kolom berkutip ganda yang **tidak ada** diperlakukan sebagai **string literal**, bukan error. Jadi `SELECT "locked_at"` pada database yang migrasinya belum diterapkan mengembalikan teks `"locked_at"` — nilai yang selalu truthy. Inilah yang pernah membuat **seluruh** akun dijawab `423 "Akun terkunci"` padahal baru sekali salah password: kode sudah memakai kolom yang belum ada di produksi. Karena itu `isLocked()` di `src/api/auth/service.ts` memeriksa **bentuk** nilainya (`YYYY-MM-DD HH:MM:SS`), bukan sekadar "ada isinya"; dengan begitu skema yang tertinggal gagal dengan `500` yang jujur, bukan pesan menyesatkan.
+- **Foreign key komposit butuh indeks unik pada pasangan kolom target yang persis:** SQLite hanya mau memakai pasangan kolom sebagai target FK bila ada **indeks unik** pada **kedua kolom itu, dalam urutan itu**. Indeks non-unik, atau indeks unik pada pasangan kolom yang berbeda, **tidak** diterima — dan galatnya tidak muncul saat `CREATE TABLE`, melainkan sebagai `foreign key mismatch - "__new_schedules" referencing "students"` baru pada `PRAGMA foreign_key_check`. Inilah yang membuat migrasi `0007` (petugas jadi relasi ke `students`) awalnya gagal: FK `(class_name, petugas_student_id) → students(class_name, id)` memerlukan `UNIQUE(class_name, id)`, sedangkan `idx_students_class_name` yang ada hanya non-unik dan kolom keduanya `name`. Perbaikannya: `uniqueIndex("idx_students_class_id")` **dibuat sebelum** `CREATE TABLE __new_schedules` di dalam migrasi yang sama (urutan penting — indeks harus sudah ada saat tabel baru dibuat), begitu pula `uniqueIndex("idx_students_id_parent")` untuk FK `(petugas_student_id, petugas_parent_id) → students(id, parent_id)`.
 - **Bundel Worker dibangun oleh `vite build`, bukan oleh `wrangler`:** plugin Cloudflare menulis `dist/pizza_snack_play/index.js` beserta `wrangler.json`-nya, plus `.wrangler/deploy/config.json` yang mengarahkan `wrangler deploy` ke berkas itu (`main: index.js`, `no_bundle: true`). Mengunggah berkas itu memang benar — asalkan `bun run build` sudah jalan, karena di situlah berkas tersebut **dibangun ulang dari `src/`**. Konsekuensinya satu hal yang perlu diingat: `wrangler deploy` **tanpa** `bun run build` lebih dulu akan mengunggah bundel terakhir yang ada di `dist/`, bukan kode terkini. Selalu lewat `bun run deploy`.
 - **Satu mekanisme migrasi untuk lokal dan remote:** pencatatannya di tabel `d1_migrations` lewat `wrangler d1 migrations apply` (`db:migrate:local` / `db:migrate`), sesuai `migrations_dir` di `wrangler.json`. Sebelumnya remote memakai `drizzle-kit migrate` (`__drizzle_migrations`) sedangkan lokal memakai wrangler, sehingga migrasi 0006 hanya tercatat di sisi lokal — akar bug "akun terkunci" di atas. `drizzle-kit push` menembak langsung ke D1 remote tanpa mencatat apa pun, jadi perubahan skema produksi tidak boleh lewat situ. `bun run deploy` kini menjalankan `db:migrate` sebelum mengunggah Worker.
 
